@@ -3,12 +3,19 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "DKL"
+name = "DKL"  # 
 version = "0.1.0"
+requires-python = ">=3.9"
+
 dependencies = [
     "numpy",
     "torch",
+    "gstlearn",
+    "properscoring",
+    "gpytorch",
+    "matplotlib",
+    "tqdm"
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/DKL"]
+packages = ["DKL"]

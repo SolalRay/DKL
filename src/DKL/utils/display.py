@@ -6,20 +6,20 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import properscoring as ps
 
-def predict_pointwise_gp(model,likelihood, X_test, batch_size=128, show_progress=True):
+def predict_pointwise_gp(model, likelihood, X_test, batch_size=128, show_progress=True):
     """
-    Fait des prédictions point par point ou par petits batches pour éviter
-    de calculer la matrice de covariance complète.
+    Performs predictions point-by-point or in small batches to avoid
+    computing the full covariance matrix (memory efficiency).
     
     Args:
-        model: Le modèle GP entraîné
-        X_test: Points de test (torch.Tensor)
-        batch_size: Taille des batches (1 pour point par point)
-        show_progress: Afficher la barre de progression
+        model: Trained GP model
+        X_test: Test points (torch.Tensor)
+        batch_size: Batch size (use 1 for point-by-point)
+        show_progress: Whether to display a progress bar
     
     Returns:
-        means: Moyennes prédites
-        variances: Variances prédites
+        means: Predicted means
+        variances: Predicted variances
     """
     model.eval()
     likelihood.eval()
@@ -28,41 +28,43 @@ def predict_pointwise_gp(model,likelihood, X_test, batch_size=128, show_progress
     means = torch.zeros(n_test)
     variances = torch.zeros(n_test)
     
-    # Créer un itérateur avec barre de progression si demandé
+    # Create iterator with progress bar if requested
     if show_progress:
         iterator = tqdm(range(0, n_test, batch_size), 
-                       desc="Prédictions GP", 
+                       desc="GP Predictions", 
                        total=int(np.ceil(n_test / batch_size)))
     else:
         iterator = range(0, n_test, batch_size)
     
     with torch.no_grad():
         for i in iterator:
-            # Définir les indices du batch
+            # Define batch indices
             end_idx = min(i + batch_size, n_test)
             batch_indices = slice(i, end_idx)
             
-            # Prédiction sur le batch
+            # Predict on the batch
             X_batch = X_test[batch_indices]
             pred_dist = model(X_batch)
 
-            # Stocker les résultats
+            # Store results
             means[batch_indices] = pred_dist.mean
             variances[batch_indices] = pred_dist.variance
-            # Libérer la mémoire
+            
+            # Memory cleanup
             del pred_dist, X_batch
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     return means, variances
 
 
-
-
-def test_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp, naive_likelihood, ideal_gp,ideal_likelihood, common_data, realization, scale , variance = False):
-
-    """ Va inferer les Trois GP sur les donnees de test et calculer le MSE """
+def test_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp, naive_likelihood, ideal_gp, ideal_likelihood, common_data, realization, scale, variance=False):
+    """
+    Infers the three GPs on test data and calculates MSE, Variances, and CRPS.
+    """
 
     print("\n--- Testing with Existing Test Grid ---")
+    # Set all models to evaluation mode
     trained_flow.eval()
     trained_gp.eval()
     trained_likelihood.eval()
@@ -72,279 +74,203 @@ def test_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp,
     ideal_likelihood.eval()
 
     print("Using the initial test grid data from generation...")
-    X_test_torch_flat = common_data['X_test_grid_torch'] # On utilise les tenseur aplatis
+    X_test_torch_flat = common_data['X_test_grid_torch'] # Use flattened tensors
     grid_size = common_data['test_grid_size']
     Y_test_2d_np_true = realization['Y_test_grid_2d']
     Y_test_torch_flat_true = realization['Y_test_grid_torch']
 
     BATCH_SIZE = 128
 
-    # On commence par le modele principal
+    # 1. Main Learned Model (DKL)
     print("Predicting and Sampling from Learned GP on test grid...")
     with torch.no_grad():
         final_trained_z = trained_flow(common_data['X_train_torch'])
 
-        # On transforme les coordonnées de test par le flow
+        # Transform test coordinates through the flow
         X_test_learned_z = trained_flow(X_test_torch_flat)
         trained_gp.set_train_data(final_trained_z, realization['Y_train_torch'], strict=True)
         learned_pred_mean_flat, learned_pred_var_flat = predict_pointwise_gp(trained_gp, trained_likelihood, X_test_learned_z, batch_size=BATCH_SIZE, show_progress=True)
 
-
-    # Pareil pour le Naif
-    print("Predicting and Sampling from Guessed GP on test grid...")
+    # 2. Naive Model (Stationary GP)
+    print("Predicting and Sampling from Guessed (Naive) GP on test grid...")
     with torch.no_grad():
-        guessed_pred_mean_flat, guessed_pred_var_flat = predict_pointwise_gp(naive_gp,naive_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
+        guessed_pred_mean_flat, guessed_pred_var_flat = predict_pointwise_gp(naive_gp, naive_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
 
-
-    # Enfin pour le cas Ideal
-    print("Predicting and Sampling from True Transformed GP on test grid...")
+    # 3. Ideal Case (Stationary GP on Ground Truth Transformation)
+    print("Predicting and Sampling from True Transformed (Ideal) GP on test grid...")
     with torch.no_grad():
-        true_transformed_pred_mean_flat, true_transformed_pred_var_flat = predict_pointwise_gp(ideal_gp, ideal_likelihood,X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
+        true_transformed_pred_mean_flat, true_transformed_pred_var_flat = predict_pointwise_gp(ideal_gp, ideal_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
 
-    # On calcule les MSE
+    # MSE Calculations
     print("\nCalculating MSE on Initial Test Grid Data...")
     y_true_torch_flat_float = Y_test_torch_flat_true.float().cpu()
+    
     mse_learned_test = F.mse_loss(learned_pred_mean_flat, y_true_torch_flat_float)
-
-    print(f"MSE (Learned Non-Stationary GP) vs True Test Grid (Rzn 0): {mse_learned_test.item():.6f}")
+    print(f"MSE (Learned Non-Stationary GP) vs True Test Grid: {mse_learned_test.item():.6f}")
 
     mse_guessed_test = F.mse_loss(guessed_pred_mean_flat, y_true_torch_flat_float)
-    print(f"MSE (Best Stationary GP in Original Space) vs True Test Grid (Rzn 0): {mse_guessed_test.item():.6f}")
+    print(f"MSE (Best Stationary GP in Original Space) vs True Test Grid: {mse_guessed_test.item():.6f}")
 
     mse_true_transformed_test = F.mse_loss(true_transformed_pred_mean_flat, y_true_torch_flat_float)
-    print(f"MSE (Stationary GP on TRUE Transformed Space) vs True Test Grid (Rzn 0): {mse_true_transformed_test.item():.6f}")
+    print(f"MSE (Stationary GP on TRUE Transformed Space) vs True Test Grid: {mse_true_transformed_test.item():.6f}")
 
-
-    # Visualisation
-    print("\n Plotting Predictions Comparison on Initial Test Grid...")
-    
-    plt.figure(figsize=(16, 12))
+    # Visualization: Predictions
+    print("\nPlotting Predictions Comparison on Initial Test Grid...")
     fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharex=True, sharey=True)
-
-    fig.suptitle('Comparison of each GP learning results', fontsize=16) # Adjusted title
+    fig.suptitle('Comparison of Prediction Results for each GP', fontsize=16)
     plot_extent = [-scale, scale, -scale, scale]
 
-    # Plot 1: Prediction from Learned Non-Stationary GP (Top-Left: axes[0, 0])
-    ax = axes[0, 0]
+    # Helper for reshaping results
     learned_pred_2d = learned_pred_mean_flat.cpu().numpy().reshape(grid_size, grid_size)
-    im = ax.imshow(learned_pred_2d, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value')
-    ax.set_title(f'Learned non-Stationary GP\n(MSE vs True: {mse_learned_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
-
-
-    # Plot 2: Prediction from Best Stationary GP (Original Space) (Top-Right: axes[0, 1])
-    ax = axes[0, 1] 
     guessed_pred_2d = guessed_pred_mean_flat.cpu().numpy().reshape(grid_size, grid_size)
-    im = ax.imshow(guessed_pred_2d, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value') 
-    ax.set_title(f'Stationary GP \n(MSE vs True: {mse_guessed_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
-
-
-    # Plot 3: Prediction from Stationary GP on TRUE Transformed Space (Bottom-Left: axes[1, 0])
-    ax = axes[1, 0]
     true_transformed_pred_2d = true_transformed_pred_mean_flat.cpu().numpy().reshape(grid_size, grid_size)
-    im = ax.imshow(true_transformed_pred_2d, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value')
-    ax.set_title(f'Transformed GP\n(MSE vs True: {mse_true_transformed_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
 
+    # Subplots for Predictions
+    results = [
+        (learned_pred_2d, f'Learned non-Stationary GP\n(MSE: {mse_learned_test.item():.6f})'),
+        (guessed_pred_2d, f'Stationary GP\n(MSE: {mse_guessed_test.item():.6f})'),
+        (true_transformed_pred_2d, f'Ideal Transformed GP\n(MSE: {mse_true_transformed_test.item():.6f})'),
+        (Y_test_2d_np_true, 'True Test Data')
+    ]
 
-    # Plot 4: True Test Grid Realization (from Realization 0) (Bottom-Right: axes[1, 1])
-    ax = axes[1, 1] 
-    im = ax.imshow(Y_test_2d_np_true, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value') # Add colorbar associated with this specific axes
-    ax.set_title(f'True Test Data', fontsize=10) # Simplified title
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
+    for ax, (data, title) in zip(axes.flat, results):
+        im = ax.imshow(data, extent=plot_extent, origin='lower', cmap='viridis')
+        fig.colorbar(im, ax=ax, label='Value')
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel('X1')
+        ax.set_ylabel('X2')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
 
-    print("\n Plotting Variances Comparison on Initial Test Grid...")
-    
-    plt.figure(figsize=(16, 12))
+    # Visualization: Variances
+    print("\nPlotting Variances Comparison on Initial Test Grid...")
     fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharex=True, sharey=True)
+    fig.suptitle('Comparison of Uncertainty (Variance) for each GP', fontsize=16)
 
-    fig.suptitle('Comparison of each GP learning results', fontsize=16) # Adjusted title
-    plot_extent = [-scale, scale, -scale, scale]
-
-    # Plot 1: Prediction variance from Learned Non-Stationary GP (Top-Left: axes[0, 0])
-    ax = axes[0, 0]
     learned_var_2d = learned_pred_var_flat.cpu().numpy().reshape(grid_size, grid_size)
-    im = ax.imshow(learned_var_2d, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value')
-    ax.set_title(f'Learned non-Stationary GP\n(MSE vs True: {mse_learned_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
-
-
-    # Plot 2: Prediction variance from Best Stationary GP (Original Space) (Top-Right: axes[0, 1])
-    ax = axes[0, 1] 
     guessed_var_2d = guessed_pred_var_flat.cpu().numpy().reshape(grid_size, grid_size)
-    im = ax.imshow(guessed_var_2d, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value') 
-    ax.set_title(f'Stationary GP \n(MSE vs True: {mse_guessed_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
-
-
-    # Plot 3: Prediction variance from Stationary GP on TRUE Transformed Space (Bottom-Left: axes[1, 0])
-    ax = axes[1, 0]
     true_transformed_var_2d = true_transformed_pred_var_flat.cpu().numpy().reshape(grid_size, grid_size)
-    im = ax.imshow(true_transformed_var_2d, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value')
-    ax.set_title(f'Transformed GP\n(MSE vs True: {mse_true_transformed_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
 
+    vars_to_plot = [
+        (learned_var_2d, 'Learned GP Variance'),
+        (guessed_var_2d, 'Stationary GP Variance'),
+        (true_transformed_var_2d, 'Ideal GP Variance'),
+        (Y_test_2d_np_true, 'True Test Data (Reference)')
+    ]
 
-    # Plot 4: True Test Grid Realization (from Realization 0) (Bottom-Right: axes[1, 1])
-    ax = axes[1, 1] 
-    im = ax.imshow(Y_test_2d_np_true, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value') # Add colorbar associated with this specific axes
-    ax.set_title(f'True Test Data', fontsize=10) # Simplified title
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
+    for ax, (data, title) in zip(axes.flat, vars_to_plot):
+        im = ax.imshow(data, extent=plot_extent, origin='lower', cmap='magma')
+        fig.colorbar(im, ax=ax, label='Uncertainty')
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel('X1')
+        ax.set_ylabel('X2')
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
     
-    print("\n Plotting CRPS Comparison on Initial Test Grid...")
-    
-    plt.figure(figsize=(16, 12))
+    # Visualization: CRPS (Continuous Ranked Probability Score)
+    print("\nPlotting CRPS Comparison on Initial Test Grid...")
     fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharex=True, sharey=True)
+    fig.suptitle('Comparison of CRPS (Local Prediction Quality)', fontsize=16)
 
-    fig.suptitle('Comparison of each GP learning results', fontsize=16) # Adjusted title
-    plot_extent = [-scale, scale, -scale, scale]
+    crps_learned = ps.crps_gaussian(Y_test_2d_np_true, learned_pred_2d, np.sqrt(learned_var_2d))
+    crps_guessed = ps.crps_gaussian(Y_test_2d_np_true, guessed_pred_2d, np.sqrt(guessed_var_2d))
+    crps_true_transformed = ps.crps_gaussian(Y_test_2d_np_true, true_transformed_pred_2d, np.sqrt(true_transformed_var_2d))
 
-    # Plot 1: Prediction variance from Learned Non-Stationary GP (Top-Left: axes[0, 0])
-    ax = axes[0, 0]
-    crps_learned = ps.crps_gaussian(Y_test_2d_np_true,learned_pred_2d, np.sqrt(learned_var_2d))
-    im = ax.imshow(crps_learned, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value')
-    ax.set_title(f'Learned non-Stationary GP\n(MSE vs True: {mse_learned_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
+    crps_results = [
+        (crps_learned, 'Learned GP CRPS'),
+        (crps_guessed, 'Stationary GP CRPS'),
+        (crps_true_transformed, 'Ideal GP CRPS'),
+        (Y_test_2d_np_true, 'True Test Data (Reference)')
+    ]
 
-
-    # Plot 2: Prediction variance from Best Stationary GP (Original Space) (Top-Right: axes[0, 1])
-    ax = axes[0, 1] 
-    crps_guessed = ps.crps_gaussian(Y_test_2d_np_true,guessed_pred_2d, np.sqrt(guessed_var_2d))
-    im = ax.imshow(crps_guessed, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value') 
-    ax.set_title(f'Stationary GP \n(MSE vs True: {mse_guessed_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
-
-
-    # Plot 3: Prediction variance from Stationary GP on TRUE Transformed Space (Bottom-Left: axes[1, 0])
-    ax = axes[1, 0]
-    crps_true_transformed = ps.crps_gaussian(Y_test_2d_np_true,true_transformed_pred_2d, np.sqrt(true_transformed_var_2d))
-    im = ax.imshow(crps_true_transformed, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value')
-    ax.set_title(f'Transformed GP\n(MSE vs True: {mse_true_transformed_test.item():.6f})', fontsize=10)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
-
-
-    # Plot 4: True Test Grid Realization (from Realization 0) (Bottom-Right: axes[1, 1])
-    ax = axes[1, 1] 
-    im = ax.imshow(Y_test_2d_np_true, extent=plot_extent, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, label='Value') # Add colorbar associated with this specific axes
-    ax.set_title(f'True Test Data', fontsize=10) # Simplified title
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
+    for ax, (data, title) in zip(axes.flat, crps_results):
+        im = ax.imshow(data, extent=plot_extent, origin='lower', cmap='inferno')
+        fig.colorbar(im, ax=ax, label='CRPS Score')
+        ax.set_title(title, fontsize=10)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
 
-    # boxplots of the CRPS
-    plt.figure(figsize=(16, 12))
-    plt.boxplot([crps_learned.flatten(), crps_guessed.flatten(), crps_true_transformed.flatten()], tick_labels=['Learned', 'Guessed', 'True Transformed'])
-    plt.title('CRPS Comparison')
-    plt.ylabel('CRPS')
+    # Statistical Comparison: CRPS Boxplots
+    plt.figure(figsize=(10, 6))
+    plt.boxplot([crps_learned.flatten(), crps_guessed.flatten(), crps_true_transformed.flatten()], 
+                tick_labels=['Learned DKL', 'Naive Stationary', 'Ideal Transformed'])
+    plt.title('CRPS Distribution Comparison')
+    plt.ylabel('CRPS (lower is better)')
     plt.yscale('log')
-    plt.grid()
+    plt.grid(True, which='both', linestyle='--', alpha=0.5)
     plt.show()
 
     print("Evaluation finished.")
 
 
-def plotting(trained_flow,trained_gp,trained_likelihood,common_data, realization,fonction,loss_history,scale):
+def plotting(trained_flow, trained_gp, trained_likelihood, common_data, realization, function, loss_history, scale):
+    """
+    Plots training loss and visualizes the warping/deformation learned by the flow.
+    """
     trained_flow.eval()
-    trained_gp.eval() # Ensure eval mode
+    trained_gp.eval() 
     trained_likelihood.eval()
 
+    device = common_data['X_train_torch'].device
 
     with torch.no_grad():
         learned_transformed_z = trained_flow(common_data['X_train_torch'])
         learned_transformed_z_np = learned_transformed_z.cpu().numpy()
         X_np = common_data['X_train_np']
-        X_transformed_true_np = fonction(X_np, scale)
+        X_transformed_true_np = function(X_np, scale)
 
-    # Plot the training loss (same as before)
+    # 1. Training Loss Plot
     plt.figure(figsize=(10, 5))
     plt.plot(loss_history)
     plt.xlabel("Epoch")
-    plt.ylabel("Loss : Negative Marginal Log-Likelihood")
-    plt.title("Joint Training Loss")
+    plt.ylabel("Negative Marginal Log-Likelihood")
+    plt.title("Joint Training Loss (Flow + GP)")
     plt.grid(True)
     plt.show()
 
-    # Plot the original data points and learned transformed points (scatter plots, same as before)
-    first_realization_y_np = realization['Y_train_np'] # Use the first realization for color coding
+    # 2. Comparison: Original Space vs Learned Latent Space
+    y_train_np = realization['Y_train_np']
+    plt.figure(figsize=(12, 6))
+    
+    plt.subplot(1, 2, 1)
+    plt.scatter(X_np[:, 0], X_np[:, 1], c=y_train_np, cmap='viridis', s=10, alpha=0.6)
+    plt.title('Original Data Space')
+    plt.axis('equal')
+    plt.grid(True)
+
+    plt.subplot(1, 2, 2)
+    plt.scatter(learned_transformed_z_np[:, 0], learned_transformed_z_np[:, 1], c=y_train_np, cmap='viridis', s=10, alpha=0.6)
+    plt.title('Data in Learned Latent Space (Z)')
+    plt.axis('equal')
+    plt.grid(True)
+    plt.show()
+
+    # 3. Comparison: True Transformed Space vs Learned Transformed Space
     plt.figure(figsize=(12, 6))
     plt.subplot(1, 2, 1)
-    scatter1 = plt.scatter(X_np[:, 0], X_np[:, 1], c=first_realization_y_np, cmap='viridis', s=10, alpha=0.6)
-    plt.colorbar(scatter1)
-    plt.title('Original Data')
-    plt.xlabel('X1')
-    plt.ylabel('X2')
+    plt.scatter(X_transformed_true_np[:, 0], X_transformed_true_np[:, 1], c=y_train_np, cmap='viridis', s=10, alpha=0.6)
+    plt.title('Ground Truth Transformed Space')
     plt.axis('equal')
     plt.grid(True)
+
     plt.subplot(1, 2, 2)
-    scatter2 = plt.scatter(learned_transformed_z_np[:, 0], learned_transformed_z_np[:, 1], c=first_realization_y_np, cmap='viridis', s=10, alpha=0.6)
-    plt.colorbar(scatter2)
-    plt.title('Original Points in Learned Transformed Space')
-    plt.xlabel('Learned Z1')
-    plt.ylabel('Learned Z2')
+    plt.scatter(learned_transformed_z_np[:, 0], learned_transformed_z_np[:, 1], c=y_train_np, cmap='viridis', s=10, alpha=0.6)
+    plt.title('Learned Transformed Space')
     plt.axis('equal')
     plt.grid(True)
     plt.show()
 
-    # Optional: Plot the true transformed points vs learned transformed points (scatter plots, same as before)
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    scatter3 = plt.scatter(X_transformed_true_np[:, 0], X_transformed_true_np[:, 1], c=first_realization_y_np, cmap='viridis', s=10, alpha=0.6)
-    plt.colorbar(scatter3)
-    plt.title('Original Points in True Transformed Space')
-    plt.xlabel('True Transformed X1')
-    plt.ylabel('True Transformed X2')
-    plt.axis('equal')
-    plt.grid(True)
-    plt.subplot(1, 2, 2)
-    scatter4 = plt.scatter(learned_transformed_z_np[:, 0], learned_transformed_z_np[:, 1], c=first_realization_y_np, cmap='viridis', s=10, alpha=0.6)
-    plt.colorbar(scatter4)
-    plt.title('Original Points in Learned Transformed Space')
-    plt.xlabel('Learned Z1')
-    plt.ylabel('Learned Z2')
-    plt.axis('equal')
-    plt.grid(True)
-    plt.show()
-
-    # Optional: Visualize the learned transformation grid (same as before)
+    # 4. Grid Distortion Visualization
     print("\nGenerating visualization grid for learned transformation...")
     grid_steps_viz = 20
     x_viz = np.linspace(-scale, scale, grid_steps_viz)
     y_viz = np.linspace(-scale, scale, grid_steps_viz)
     X_viz_grid_np, Y_viz_grid_np = np.meshgrid(x_viz, y_viz)
     X_viz_np = np.vstack([X_viz_grid_np.ravel(), Y_viz_grid_np.ravel()]).T
-    X_viz_torch = torch.tensor(X_viz_np, dtype=torch.float32)#.to(device)
+    X_viz_torch = torch.tensor(X_viz_np, dtype=torch.float32).to(device)
 
     with torch.no_grad():
         learned_viz_z = trained_flow(X_viz_torch)
@@ -358,10 +284,9 @@ def plotting(trained_flow,trained_gp,trained_likelihood,common_data, realization
         plt.plot(Z_viz_grid_x[i, :], Z_viz_grid_y[i, :], color='gray', alpha=0.5)
         plt.plot(Z_viz_grid_x[:, i], Z_viz_grid_y[:, i], color='gray', alpha=0.5)
 
-    plt.title('Learned Transformation of Original Grid')
+    plt.title('Visualization of the Learned Spatial Warping')
     plt.xlabel('Learned Z1')
     plt.ylabel('Learned Z2')
     plt.axis('equal')
     plt.grid(True)
     plt.show()
-    #vis.final(trained_flow)

@@ -5,6 +5,7 @@ import gpytorch
 from DKL.models.normalizing_flow import RealNVP
 from DKL.models.kernel import ExactGPModel
 from DKL.training.early_stopping import EarlyStopping
+from tqdm import tqdm
 
 from pathlib import Path
 
@@ -14,17 +15,17 @@ MODELS_DIR.mkdir(exist_ok=True)
 
 
 def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, gp_lr=0.01, num_flow_blocks=12, no_learn_lengthscale=False,
-                      checkpoint_name='learned_gp_checkpoint.pth', # Chemin pour les checkpoints périodiques
-                      patience=10, # patience pour Early Stopping
-                      delta=0     #  delta pour Early Stopping
-                      ): # Nouveau chemin pour le meilleur modèle par ES
+                      checkpoint_name='learned_gp_checkpoint.pth', # Path for periodic checkpoints
+                      device = "cpu",
+                      patience=10, # Patience for Early Stopping
+                      delta=0     # Delta for Early Stopping
+                      ): 
     """
-    Entraine le flow et le GP en meme temps, avec Early Stopping.
-    Taux d'apprentissage differencie. Possibilite de ne pas apprendre la lengthscale du GP.
-    Permet de reprendre l'entraînement à partir d'un checkpoint.
+    Trains the flow and the GP simultaneously with Early Stopping.
+    Uses differentiated learning rates. Option to freeze the GP lengthscale.
+    Allows resuming training from a checkpoint.
     """
 
-    device = common_data['X_train_torch'].device
     flow_model = RealNVP(num_blocks=num_flow_blocks).to(device)
     likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
     checkpoint_path = MODELS_DIR / checkpoint_name
@@ -36,32 +37,36 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
 
     # Freezing the Lengthscale
     if no_learn_lengthscale:
-        print("\nGeler la lengthscale...")
+        print("\nFreezing the lengthscale...")
         gp_model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
 
-    # Separe les differents parametres
+    # Separate different parameters
     param_groups = [
-    {'params': flow_model.parameters(), 'lr': flow_lr},
+        {'params': flow_model.parameters(), 'lr': flow_lr},
     ]
+    
+    gp_learnable_params = []
     if not no_learn_lengthscale:
-    # ajoute les parametres entrainables du GP si ils sont disponibles
+        # Add trainable GP parameters if available
         gp_learnable_params = list(filter(lambda p: p.requires_grad, gp_model.parameters()))
+    
     if gp_learnable_params:
         param_groups.append({'params': gp_learnable_params, 'lr': gp_lr})
 
     optimizer = optim.Adam(param_groups)
 
+    # MLL is the loss function for GP
     mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, gp_model)
 
     start_epoch = 0
     loss_history = []
     
-    # --- Initialisation de l'EarlyStopping ---
+    # --- EarlyStopping Initialization ---
     early_stopping = EarlyStopping(patience=patience, delta=delta)
 
-    # Si on reprend l'entrainement a un point donne
+    # If resuming training from a given point
     if os.path.exists(checkpoint_path):
-        print(f"Chargement du checkpoint depuis {checkpoint_path}...")
+        print(f"Loading checkpoint from {checkpoint_path}...")
         checkpoint = torch.load(checkpoint_path, map_location=device)
         flow_model.load_state_dict(checkpoint['flow_model_state_dict'])
         gp_model.load_state_dict(checkpoint['gp_model_state_dict'])
@@ -69,37 +74,36 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         loss_history = checkpoint['loss_history']
-        print(f"Reprise de l'entraînement à partir de l'époque {start_epoch}")
+        print(f"Resuming training from epoch {start_epoch}")
     else:
-        print("Aucun checkpoint trouvé. Début de l'entraînement à zéro.")
+        print("No checkpoint found. Starting training from scratch.")
 
     flow_model.train()
     gp_model.train()
     likelihood.train()
 
-    print("\nDébut de l'entraînement...")
+    print("\nStarting training...")
 
-    for i in range(start_epoch, num_epochs): # Boucle depuis start_epoch
+    for i in tqdm(range(start_epoch, num_epochs)): # Loop starting from start_epoch
         optimizer.zero_grad()
 
-        Y_train_torch = realization['Y_train_torch'].to(device) # Assurez-vous que les données sont sur le device
-        X_train_torch = common_data['X_train_torch'].to(device) # Assurez-vous que les données sont sur le device
+        Y_train_torch = realization['Y_train_torch'].to(device) # Ensure data is on the correct device
+        X_train_torch = common_data['X_train_torch'].to(device) # Ensure data is on the correct device
 
-        # transforme les coordonnees par le NF
+        # Transform coordinates through the Normalizing Flow (NF)
         transformed_z = flow_model(X_train_torch)
 
-        # Entraine le GP sur la sortie du NF
+        # Train the GP on the NF output
         gp_model.set_train_data(transformed_z.detach(), Y_train_torch, strict=False)
         output_distribution = gp_model(transformed_z)
 
-        # calcule la perte
+        # Calculate loss (Negative Log Likelihood)
         loss = -mll(output_distribution, Y_train_torch)
 
-
-        # Effectue le backward pass sur la perte totale de l'époque
+        # Perform backward pass
         loss.backward()
 
-        ## Gradient clipping en cas de freezing de la lengthscale
+        ## Gradient clipping (useful when freezing lengthscale or handling deep flows)
         torch.nn.utils.clip_grad_norm_(flow_model.parameters(), max_norm=1.0)
         if not no_learn_lengthscale:
              gp_learnable_params_now = list(filter(lambda p: p.requires_grad and p.grad is not None, gp_model.parameters()))
@@ -111,8 +115,10 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
 
         current_total_loss = loss.item()
 
+        # Check for improvement via Early Stopping
         improved = early_stopping(current_total_loss)
 
+        # Save checkpoint if loss improved
         if improved and (i + 1) % 10:
             torch.save({
                 'epoch': i,
@@ -122,28 +128,28 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss_min': early_stopping.val_loss_min,
                 'best_score': early_stopping.best_score,
-                'loss_history': loss_history # Sauvegarder l'historique complet jusqu'à ce point
+                'loss_history': loss_history # Save full history up to this point
             }, checkpoint_path)
 
         if early_stopping.early_stop:
-            print(f"Early Stopping activé à l'époque {i+1} ! Aucune amélioration depuis {patience} époques.")
-            break # Sort de la boucle d'entraînement
+            print(f"Early Stopping triggered at epoch {i+1}! No improvement for {patience} epochs.")
+            break # Exit training loop
 
-    print("Entraînement terminé.")
+    print("Training finished.")
 
-    # On change les le dernier modele periodique par le meilleur
-    # Ceci garantit que la fonction retourne le modèle le plus performant.
+    # Load the best performing model from the saved checkpoint
+    # This ensures the function returns the best state rather than the last one.
     if os.path.exists(checkpoint_path):
-        print(f"Chargement du meilleur modèle joint depuis {checkpoint_path} pour le retour final...")
+        print(f"Loading best joint model from {checkpoint_path} for final return...")
         best_checkpoint = torch.load(checkpoint_path, map_location=device)
         flow_model.load_state_dict(best_checkpoint['flow_model_state_dict'])
         gp_model.load_state_dict(best_checkpoint['gp_model_state_dict'])
         likelihood.load_state_dict(best_checkpoint['likelihood_state_dict'])
     else:
-        print(f"Attention : Aucun checkpoint du meilleur modèle trouvé à {checkpoint_path}. "
-              "Le modèle retourné est celui de la dernière époque entraînée.")
+        print(f"Warning: No 'best model' checkpoint found at {checkpoint_path}. "
+              "The returned model is the state from the last trained epoch.")
 
-    # Passer les modèles en mode évaluation avant de les retourner
+    # Set models to evaluation mode before returning
     flow_model.eval()
     gp_model.eval()
     likelihood.eval()

@@ -1,23 +1,22 @@
 import torch.optim as optim
 import numpy as np
 
-
 class EarlyStopping:
     """
-    Arrête l'entraînement tôt si la perte de validation ne s'améliore pas après une patience donnée.
+    Stops training early if the validation loss does not improve after a given patience.
     """
     def __init__(self, patience=7, delta=0):
         self.patience = patience
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_loss_min = np.inf # Initialiser la perte minimale à l'infini)
+        self.val_loss_min = np.inf # Initialize minimum loss to infinity
         self.delta = delta
 
     def __call__(self, val_loss):
         """
-        Appelée à chaque fin d'époque pour décider si l'entraînement doit s'arrêter.
-        Retourne True si une amélioration est détectée, False sinon.
+        Called at the end of each epoch to decide whether training should stop.
+        Returns True if an improvement is detected, False otherwise.
         """
         score = -val_loss
         
@@ -36,4 +35,5 @@ class EarlyStopping:
             self.val_loss_min = val_loss # Update min_loss
             self.counter = 0 # Reset counter
             improved = True
-        return improved # on donne le signal pour sauvegarder le modèle si amélioré
+            
+        return improved # Provides the signal to save the model if improved

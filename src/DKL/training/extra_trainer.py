@@ -1,8 +1,8 @@
-
 import os
 import torch
 import gpytorch
 import torch.optim as optim
+from tqdm import tqdm
 from ..models.kernel import ExactGPModel
 from ..models.kernel import TransformedGPModel
 from ..training.early_stopping import EarlyStopping
@@ -14,17 +14,16 @@ MODELS_DIR = PROJECT_ROOT / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 
 
-
 def train_naive_gp(common_data, realization, num_epochs=100, lr=0.1, 
                    checkpoint_name='naive_gp_checkpoint.pth', 
+                   device = "cpu",
                    patience=10, 
                    delta=0):     
     """
-    Entraîne le GP naïf avec Early Stopping.
-    Sauvegarde le modèle seulement s'il y a amélioration et que l'époque est un multiple de 10.
+    Trains the Naive GP with Early Stopping.
+    Saves the model only if there is improvement and the epoch is a multiple of 10.
     """
     checkpoint_path = MODELS_DIR / checkpoint_name
-    device = common_data['X_train_torch'].device
     X_train_torch = common_data['X_train_torch'].to(device)
     Y_train_torch = realization['Y_train_torch'].to(device)
 
@@ -39,24 +38,23 @@ def train_naive_gp(common_data, realization, num_epochs=100, lr=0.1,
 
     start_epoch = 0
     early_stopping = EarlyStopping(patience=patience, delta=delta)
-    checkpoint_path = checkpoint_path # Le meilleur modèle sera sauvegardé ici
 
     if os.path.exists(checkpoint_path):
-        print(f"Chargement du checkpoint Naive GP depuis {checkpoint_path}...")
+        print(f"Loading Naive GP checkpoint from {checkpoint_path}...")
         checkpoint = torch.load(checkpoint_path, map_location=device)
         naive_gp_model.load_state_dict(checkpoint['gp_model_state_dict'])
         naive_likelihood.load_state_dict(checkpoint['likelihood_state_dict'])
         naive_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
-        print(f"Reprise de l'entraînement Naive GP à partir de l'époque {start_epoch}")
+        print(f"Resuming Naive GP training from epoch {start_epoch}")
     else:
-        print("Aucun checkpoint Naive GP trouvé. Début de l'entraînement.")
+        print("No Naive GP checkpoint found. Starting training from scratch.")
 
     naive_gp_model.train()
     naive_likelihood.train()
 
-    print(f"Entraînement du GP Naif sur les données originales pour {num_epochs} époques (début {start_epoch})...")
-    for k in range(start_epoch, num_epochs):
+    print(f"Training Naive GP on original data for {num_epochs} epochs (starting at {start_epoch})...")
+    for k in tqdm(range(start_epoch, num_epochs)):
         naive_optimizer.zero_grad()
         output_naive = naive_gp_model(X_train_torch)
         loss_naive = -mll_naive(output_naive, Y_train_torch)
@@ -65,12 +63,12 @@ def train_naive_gp(common_data, realization, num_epochs=100, lr=0.1,
 
         current_loss_item = loss_naive.item()
 
-        # Logique d'Early Stopping et d'enregistrement
+        # Early Stopping and checkpointing logic
         improved = early_stopping(current_loss_item)
 
         if improved and (k + 1) % 10 == 0: 
-            print(f'  Naive GP Époque {k+1}/{num_epochs}: Perte {current_loss_item:.4f}, Longueur de corrélation: {naive_gp_model.covar_module.base_kernel.lengthscale.detach().cpu().numpy()}, Échelle de sortie: {naive_gp_model.covar_module.outputscale.item():.4f}, Bruit: {naive_likelihood.noise.item():.4f}')
-            print(f"  Meilleure perte détectée et époque éligible.")
+            print(f'  Naive GP Epoch {k+1}/{num_epochs}: Loss {current_loss_item:.4f}, Lengthscale: {naive_gp_model.covar_module.base_kernel.lengthscale.detach().cpu().numpy()}, Outputscale: {naive_gp_model.covar_module.outputscale.item():.4f}, Noise: {naive_likelihood.noise.item():.4f}')
+            print(f"  Best loss detected and epoch eligible for saving.")
             torch.save({
                 'epoch': k,
                 'gp_model_state_dict': naive_gp_model.state_dict(),
@@ -81,20 +79,20 @@ def train_naive_gp(common_data, realization, num_epochs=100, lr=0.1,
             }, checkpoint_path)
 
         if early_stopping.early_stop:
-            print(f"Early Stopping activé à l'époque {k+1}! Aucune amélioration depuis {patience} époques.")
+            print(f"Early Stopping triggered at epoch {k+1}! No improvement for {patience} epochs.")
             break 
 
-    print("Entraînement Naive GP terminé.")
+    print("Naive GP training complete.")
 
-    # Chargement du MEILLEUR modèle sauvegardé par Early Stopping
+    # Load the BEST model saved by Early Stopping
     if os.path.exists(checkpoint_path):
-        print(f"Chargement du meilleur modèle Naive GP depuis {checkpoint_path} pour le retour final...")
+        print(f"Loading best Naive GP model from {checkpoint_path} for final return...")
         best_checkpoint = torch.load(checkpoint_path, map_location=device)
         naive_gp_model.load_state_dict(best_checkpoint['gp_model_state_dict'])
         naive_likelihood.load_state_dict(best_checkpoint['likelihood_state_dict'])
     else:
-        print(f"Attention : Aucun checkpoint du meilleur modèle trouvé à {checkpoint_path}. "
-              "Le modèle retourné est celui de la dernière époque entraînée.")
+        print(f"Warning: No best model checkpoint found at {checkpoint_path}. "
+              "Returning model from the last trained epoch.")
 
     naive_gp_model.eval()
     naive_likelihood.eval()
@@ -102,24 +100,24 @@ def train_naive_gp(common_data, realization, num_epochs=100, lr=0.1,
     return naive_gp_model, naive_likelihood
 
 
-def train_ideal_gp(common_data, realization,function,
-                num_epochs=100, lr=0.1,
-                    lengthscale = 2.0,
+def train_ideal_gp(common_data, realization, function,
+                   num_epochs=100, lr=0.1,
+                   lengthscale=2.0,
+                   device = "cpu",
                    checkpoint_name='ideal_gp_checkpoint.pth', 
                    patience=10, 
                    delta=0):     
     """
-    Entraîne le GP idéal sur des données transformées avec Early Stopping.
-    Sauvegarde le modèle seulement s'il y a amélioration et que l'époque est un multiple de 10.
+    Trains the Ideal GP on transformed data with Early Stopping.
+    Saves the model only if there is improvement and the epoch is a multiple of 10.
     """
-    device = common_data['X_train_torch'].device
     X_train_torch = common_data['X_train_torch'].to(device)
     Y_train_torch = realization['Y_train_torch'].to(device)
     checkpoint_path = MODELS_DIR / checkpoint_name
-
-
+    
     ideal_likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
-    ideal_gp_model = TransformedGPModel(X_train_torch, Y_train_torch, ideal_likelihood, function, lengthscale).to(device) # Assurez-vous que TransformedGPModel est défini
+    # Ensure TransformedGPModel is correctly defined in your kernel module
+    ideal_gp_model = TransformedGPModel(X_train_torch, Y_train_torch, ideal_likelihood, function, lengthscale).to(device) 
 
     ideal_optimizer = optim.Adam([
         {'params': ideal_gp_model.parameters()},
@@ -129,24 +127,23 @@ def train_ideal_gp(common_data, realization,function,
 
     start_epoch = 0
     early_stopping = EarlyStopping(patience=patience, delta=delta)
-    checkpoint_path = checkpoint_path # Le meilleur modèle sera sauvegardé ici
 
     if os.path.exists(checkpoint_path):
-        print(f"Chargement du checkpoint GP transformé depuis {checkpoint_path}...")
+        print(f"Loading Transformed GP checkpoint from {checkpoint_path}...")
         checkpoint = torch.load(checkpoint_path, map_location=device)
         ideal_gp_model.load_state_dict(checkpoint['gp_model_state_dict'])
         ideal_likelihood.load_state_dict(checkpoint['likelihood_state_dict'])
         ideal_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
-        print(f"Reprise de l'entraînement GP transformé à partir de l'époque {start_epoch}")
+        print(f"Resuming Transformed GP training from epoch {start_epoch}")
     else:
-        print("Aucun checkpoint GP transformé trouvé. Début de l'entraînement.")
+        print("No Transformed GP checkpoint found. Starting training from scratch.")
 
     ideal_gp_model.train()
     ideal_likelihood.train()
 
-    print(f"Entraînement du GP transformé pour {num_epochs} époques (début {start_epoch})...")
-    for k in range(start_epoch, num_epochs):
+    print(f"Training Transformed GP for {num_epochs} epochs (starting at {start_epoch})...")
+    for k in tqdm(range(start_epoch, num_epochs)):
         ideal_optimizer.zero_grad()
         output_ideal = ideal_gp_model(X_train_torch)
         loss_ideal = -mll_ideal(output_ideal, Y_train_torch)
@@ -155,12 +152,12 @@ def train_ideal_gp(common_data, realization,function,
 
         current_loss_item = loss_ideal.item()
 
-        # Logique d'Early Stopping et d'enregistrement
+        # Early Stopping and checkpointing logic
         improved = early_stopping(current_loss_item)
 
         if improved and (k + 1) % 10 == 0: 
-            print(f'  GP transformé Époque {k+1}/{num_epochs}: Perte {current_loss_item:.4f}, Longueur de corrélation: {ideal_gp_model.covar_module.base_kernel.lengthscale.detach().cpu().numpy()}, Échelle de sortie: {ideal_gp_model.covar_module.outputscale.item():.4f}, Bruit: {ideal_likelihood.noise.item():.4f}')
-            print(f"  Meilleure perte détectée et époque éligible.")
+            print(f'  Transformed GP Epoch {k+1}/{num_epochs}: Loss {current_loss_item:.4f}, Lengthscale: {ideal_gp_model.covar_module.base_kernel.lengthscale.detach().cpu().numpy()}, Outputscale: {ideal_gp_model.covar_module.outputscale.item():.4f}, Noise: {ideal_likelihood.noise.item():.4f}')
+            print(f"  Best loss detected and epoch eligible for saving.")
             torch.save({
                 'epoch': k,
                 'gp_model_state_dict': ideal_gp_model.state_dict(),
@@ -171,20 +168,20 @@ def train_ideal_gp(common_data, realization,function,
             }, checkpoint_path)
 
         if early_stopping.early_stop:
-            print(f"Early Stopping activé à l'époque {k+1}! Aucune amélioration depuis {patience} époques.")
+            print(f"Early Stopping triggered at epoch {k+1}! No improvement for {patience} epochs.")
             break 
 
-    print("Entraînement GP transformé terminé.")
+    print("Transformed GP training complete.")
 
-    # Chargement du MEILLEUR modèle sauvegardé par Early Stopping
+    # Load the BEST model saved by Early Stopping
     if os.path.exists(checkpoint_path):
-        print(f"Chargement du meilleur modèle Ideal GP depuis {checkpoint_path} pour le retour final...")
+        print(f"Loading best Ideal GP model from {checkpoint_path} for final return...")
         best_checkpoint = torch.load(checkpoint_path, map_location=device)
         ideal_gp_model.load_state_dict(best_checkpoint['gp_model_state_dict'])
         ideal_likelihood.load_state_dict(best_checkpoint['likelihood_state_dict'])
     else:
-        print(f"Attention : Aucun checkpoint du meilleur modèle trouvé à {checkpoint_path}. "
-              "Le modèle retourné est celui de la dernière époque entraînée.")
+        print(f"Warning: No best model checkpoint found at {checkpoint_path}. "
+              "Returning model from the last trained epoch.")
 
     ideal_gp_model.eval()
     ideal_likelihood.eval()
