@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "DKL"  # 
+name = "DKL"
 version = "0.1.0"
 requires-python = ">=3.9"
 
@@ -18,4 +18,9 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["DKL"]
+# On indique que le package DKL se trouve à l'intérieur de src/
+packages = ["src/DKL"]
+
+[tool.hatch.build.targets.editable]
+# Indispensable pour le mode éditable (pip install -e .)
+path = "."
