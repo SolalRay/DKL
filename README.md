@@ -1,6 +1,6 @@
 # Deep kernel learning for geostatistics
 
-Implementation of the "Deep kernel learning for geostatistics" paper, written by Thomas Romary, Solal Raymondjean and Nicolas Dessasis (Mines Paris). Paper available in preprint at: https://minesparis-psl.hal.science/hal-05165114v2
+Implementation of the "Deep kernel learning for geostatistics" paper, written by Thomas Romary, Solal Raymondjean and Nicolas Dessasis (Mines Paris). Preprint available  at: https://minesparis-psl.hal.science/hal-05165114v2
 
 ## Overview
 
@@ -19,20 +19,20 @@ pip install -e .
 ```
 You might want to use a virtual environment
 
-## Use
+## Usage
 
-The codebase is written as a package, with all functions clearly defined and commented in appropriate folders. 
-In addition, two notebooks show how to use the function and evaluate the performance of Gaussian Processes coupled to Real NVP architectures.
+### Interactive Notebooks
+Two primary notebooks are provided to demonstrate the workflow and evaluate the performance of Gaussian Processes combined with Real NVP architectures:
 
-More Specifically :
-- `DKL_learning.ipynb`: Comparison of DKL performance on synthetic data against stationary and "ideal" baselines.
-- `DKL_real_data.ipynb`: Application of the approach to real-world geostatistical datasets.
+* **`DKL_learning.ipynb`**: Benchmarks the DKL approach on synthetic non-stationary data against stationary and "ideal" baselines.
+* **`DKL_real_data.ipynb`**: Demonstrates the application of the model to real-world geostatistical datasets.
 
-Also, one can use the `script` folder to write direct python code to evaluate GP real data without using ipykernels interface.
+### Scripting
+The **`script/`** folder contains Python scripts to run evaluations and training directly from the command line.
 
 ## Project Structure
 
-The codebase is organized as a modular Python package:
+The codebase is structured as a Python package, with all modules documented and organized by functionality.
 
 - `DKL.models`: RealNVP architecture and GP model definitions.
 
