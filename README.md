@@ -1,6 +1,6 @@
 # Deep kernel learning for geostatistics
 
-Official Implementation of the "Deep kernel learning for geostatistics" paper, written by Thomas Romary, Solal Raymondjean and Nicolas Dessasis (Mines Paris). Paper available in preprint at: https://minesparis-psl.hal.science/hal-05165114v2
+Implementation of the "Deep kernel learning for geostatistics" paper, written by Thomas Romary, Solal Raymondjean and Nicolas Dessasis (Mines Paris). Paper available in preprint at: https://minesparis-psl.hal.science/hal-05165114v2
 
 ## Overview
 
