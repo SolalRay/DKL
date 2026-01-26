@@ -58,7 +58,11 @@ def predict_pointwise_gp(model, likelihood, X_test, batch_size=128, show_progres
     return means, variances
 
 
-def test_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp, naive_likelihood, ideal_gp, ideal_likelihood, common_data, realization, scale, variance=False):
+def test_new_realization(trained_flow, trained_gp, trained_likelihood,
+                        naive_gp, naive_likelihood, 
+                        ideal_gp, ideal_likelihood, 
+                        common_data, realization, scale, savefig = False,
+                        variance=False):
     """
     Infers the three GPs on test data and calculates MSE, Variances, and CRPS.
     """
@@ -142,6 +146,9 @@ def test_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp,
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
+    if savefig:
+        plt.savefig("tn1.png")
+
 
     # Visualization: Variances
     print("\nPlotting Variances Comparison on Initial Test Grid...")
@@ -168,6 +175,8 @@ def test_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp,
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
+    if savefig :
+        plt.savefig("tn2.png")
     
     # Visualization: CRPS (Continuous Ranked Probability Score)
     print("\nPlotting CRPS Comparison on Initial Test Grid...")
@@ -202,11 +211,16 @@ def test_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp,
     plt.yscale('log')
     plt.grid(True, which='both', linestyle='--', alpha=0.5)
     plt.show()
+    if savefig:
+        plt.savefig("tn3.png")
+
 
     print("Evaluation finished.")
 
 
-def plotting(trained_flow, trained_gp, trained_likelihood, common_data, realization, function, loss_history, scale):
+def plotting(trained_flow, trained_gp, trained_likelihood, 
+            common_data, realization, function,
+            loss_history, scale, savefig = False):
     """
     Plots training loss and visualizes the warping/deformation learned by the flow.
     """
@@ -230,6 +244,9 @@ def plotting(trained_flow, trained_gp, trained_likelihood, common_data, realizat
     plt.title("Joint Training Loss (Flow + GP)")
     plt.grid(True)
     plt.show()
+    if savefig:
+        plt.savefig("loss.png")
+
 
     # 2. Comparison: Original Space vs Learned Latent Space
     y_train_np = realization['Y_train_np']
@@ -247,6 +264,9 @@ def plotting(trained_flow, trained_gp, trained_likelihood, common_data, realizat
     plt.axis('equal')
     plt.grid(True)
     plt.show()
+    if savefig:
+        plt.savefig("OvsL.png")
+
 
     # 3. Comparison: True Transformed Space vs Learned Transformed Space
     plt.figure(figsize=(12, 6))
@@ -262,6 +282,9 @@ def plotting(trained_flow, trained_gp, trained_likelihood, common_data, realizat
     plt.axis('equal')
     plt.grid(True)
     plt.show()
+    if savefig:
+        plt.savefig("TvsL.png")
+
 
     # 4. Grid Distortion Visualization
     print("\nGenerating visualization grid for learned transformation...")
@@ -290,3 +313,5 @@ def plotting(trained_flow, trained_gp, trained_likelihood, common_data, realizat
     plt.axis('equal')
     plt.grid(True)
     plt.show()
+    if savefig:
+        plt.savefig("transformation.png")

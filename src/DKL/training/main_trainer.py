@@ -2,9 +2,9 @@ import os
 import torch
 import torch.optim as optim
 import gpytorch
-from DKL.models.normalizing_flow import RealNVP
-from DKL.models.kernel import ExactGPModel
-from DKL.training.early_stopping import EarlyStopping
+from ..models.normalizing_flow import RealNVP
+from ..models.kernel import ExactGPModel
+from  .early_stopping import EarlyStopping
 from tqdm import tqdm
 
 from pathlib import Path
@@ -41,7 +41,7 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
         gp_model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
 
     # Separate different parameters
-    param_groups = [
+    param_nf = [
         {'params': flow_model.parameters(), 'lr': flow_lr},
     ]
     
@@ -50,10 +50,12 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
         # Add trainable GP parameters if available
         gp_learnable_params = list(filter(lambda p: p.requires_grad, gp_model.parameters()))
     
-    if gp_learnable_params:
-        param_groups.append({'params': gp_learnable_params, 'lr': gp_lr})
+    param_gp = [
+        {'params': gp_learnable_params, 'lr': gp_lr},
+    ]
 
-    optimizer = optim.Adam(param_groups)
+    optimizer_gp = optim.AdamW(param_nf)
+    optimizer_nf = optim.AdamW(param_gp)
 
     # MLL is the loss function for GP
     mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, gp_model)
@@ -71,7 +73,8 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
         flow_model.load_state_dict(checkpoint['flow_model_state_dict'])
         gp_model.load_state_dict(checkpoint['gp_model_state_dict'])
         likelihood.load_state_dict(checkpoint['likelihood_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        optimizer_nf.load_state_dict(checkpoint['optimizer_nf_state_dict'])
+        optimizer_gp.load_state_dict(checkpoint['optimizer_gp_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         loss_history = checkpoint['loss_history']
         print(f"Resuming training from epoch {start_epoch}")
@@ -85,7 +88,9 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
     print("\nStarting training...")
 
     for i in tqdm(range(start_epoch, num_epochs)): # Loop starting from start_epoch
-        optimizer.zero_grad()
+        optimizer_nf.zero_grad()
+        optimizer_gp.zero_grad()
+
 
         Y_train_torch = realization['Y_train_torch'].to(device) # Ensure data is on the correct device
         X_train_torch = common_data['X_train_torch'].to(device) # Ensure data is on the correct device
@@ -110,7 +115,8 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
              if gp_learnable_params_now:
                   torch.nn.utils.clip_grad_norm_(gp_learnable_params_now, max_norm=1.0)
 
-        optimizer.step()
+        optimizer_nf.step()
+        optimizer_gp.step()
         loss_history.append(loss.item())
 
         current_total_loss = loss.item()
@@ -125,7 +131,8 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
                 'flow_model_state_dict': flow_model.state_dict(),
                 'gp_model_state_dict': gp_model.state_dict(),
                 'likelihood_state_dict': likelihood.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
+                'optimizer_state_dict': optimizer_nf.state_dict(),
+                'optimizer_state_dict': optimizer_gp.state_dict(),
                 'val_loss_min': early_stopping.val_loss_min,
                 'best_score': early_stopping.best_score,
                 'loss_history': loss_history # Save full history up to this point
