@@ -14,12 +14,13 @@ MODELS_DIR = PROJECT_ROOT / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 
 
-def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, gp_lr=0.01, num_flow_blocks=12, no_learn_lengthscale=False,
-                      checkpoint_name='learned_gp_checkpoint.pth', # Path for periodic checkpoints
-                      device = "cpu",
-                      patience=10, # Patience for Early Stopping
-                      delta=0     # Delta for Early Stopping
-                      ): 
+def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, gp_lr=0.01,
+                    num_flow_blocks=12, no_learn_lengthscale=False,
+                    checkpoint_name='learned_gp_checkpoint.pth', # Path for periodic checkpoints
+                    device = "cpu",
+                    patience=10, # Patience for Early Stopping
+                    delta=0     # Delta for Early Stopping
+                    ): 
     """
     Trains the flow and the GP simultaneously with Early Stopping.
     Uses differentiated learning rates. Option to freeze the GP lengthscale.
@@ -39,6 +40,8 @@ def train_joint_model(common_data, realization, num_epochs=500, flow_lr=0.001, g
     if no_learn_lengthscale:
         print("\nFreezing the lengthscale...")
         gp_model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
+        gp_model.covar_module.base_kernel.lengthscale = 1.0
+
 
     # Separate different parameters
     param_nf = [

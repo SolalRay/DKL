@@ -6,6 +6,8 @@ from tqdm import tqdm
 from ..models.kernel import ExactGPModel
 from ..models.kernel import TransformedGPModel
 from ..training.early_stopping import EarlyStopping
+from ..models.normalizing_flow import RealNVP
+
 
 from pathlib import Path
 
@@ -187,3 +189,130 @@ def train_ideal_gp(common_data, realization, function,
     ideal_likelihood.eval()
 
     return ideal_gp_model, ideal_likelihood
+
+def train_hybrid_flow_gp_simple(common_data, realization, num_epochs=500, flow_lr=0.001, gp_lr=0.01, 
+                               flow_batch_size=32, gp_update_frequency=10, no_learn_lengthscale=False,
+                               checkpoint_name='hybrid_checkpoint.pth', patience=10, delta=0,
+                               device = "cpu", num_flow_blocks=12):
+    """
+    Version simplifiée qui évite complètement le problème d'indexation.
+    Utilise un GP temporaire pour chaque minibatch.
+    """
+    
+    flow_model = RealNVP(num_blocks=num_flow_blocks).to(device)
+    likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
+    checkpoint_path = MODELS_DIR / checkpoint_name
+
+    
+    # GP principal initialisé avec toutes les données
+    X_train_torch = common_data['X_train_torch'].to(device)
+    Y_train_torch = realization['Y_train_torch'].to(device)  # Première réalisation pour init
+    gp_model = ExactGPModel(X_train_torch, Y_train_torch, likelihood).to(device)
+    
+    if no_learn_lengthscale:
+        gp_model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
+        gp_model.covar_module.base_kernel.lengthscale = 1.0
+    
+    # Optimiseurs séparés
+    flow_optimizer = optim.Adam(flow_model.parameters(), lr=flow_lr)
+    gp_params = list(filter(lambda p: p.requires_grad, gp_model.parameters()))
+    gp_optimizer = optim.Adam(gp_params, lr=gp_lr) if gp_params else None
+    
+    # Préparer les minibatches pour le Flow
+    num_samples = X_train_torch.shape[0]
+    num_flow_batches = (num_samples + flow_batch_size - 1) // flow_batch_size
+    
+    print(f"Stratégie hybride simple:")
+    print(f"- Flow: minibatch de {flow_batch_size} échantillons")
+    print(f"- GP: toutes les données ({num_samples} échantillons)")
+    print(f"- Mise à jour GP: tous les {gp_update_frequency} steps")
+    
+    flow_model.train()
+    gp_model.train()
+    likelihood.train()
+    
+    step_count = 0
+    loss_history = []
+    
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+        
+        # Boucle sur les réalisations
+        Y_real = realization['Y_train_torch'].to(device)
+        
+        # Entraîner le Flow par minibatch
+        for batch_idx in range(num_flow_batches):
+            step_count += 1
+            update_gp = (step_count % gp_update_frequency == 0)
+            
+            # Préparer le minibatch pour le Flow
+            start_idx = batch_idx * flow_batch_size
+            end_idx = min((batch_idx + 1) * flow_batch_size, num_samples)
+            
+            X_batch = X_train_torch[start_idx:end_idx]
+            Y_batch = Y_real[start_idx:end_idx]
+            
+            # Forward pass Flow
+            flow_optimizer.zero_grad()
+            if update_gp and gp_optimizer:
+                gp_optimizer.zero_grad()
+            
+            # Transformer le minibatch
+            transformed_batch = flow_model(X_batch)
+            
+            if update_gp:
+                # Créer un GP temporaire pour ce minibatch
+                temp_gp = ExactGPModel(transformed_batch, Y_batch, likelihood).to(device)
+                
+                # Copier les paramètres du GP principal
+                temp_gp.load_state_dict(gp_model.state_dict())
+                
+                # Évaluer
+                output_dist = temp_gp(transformed_batch)
+                temp_mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, temp_gp)
+                loss = -temp_mll(output_dist, Y_batch)
+                
+                # Mettre à jour le GP principal après le backward
+                loss.backward()
+                
+                # Copier les gradients vers le GP principal
+                for main_param, temp_param in zip(gp_model.parameters(), temp_gp.parameters()):
+                    if main_param.requires_grad and temp_param.grad is not None:
+                        if main_param.grad is None:
+                            main_param.grad = temp_param.grad.clone()
+                        else:
+                            main_param.grad += temp_param.grad
+            else:
+                # Seulement le Flow, GP fixé
+                with torch.no_grad():
+                    # Utiliser le GP principal mais avec des données transformées
+                    temp_gp = ExactGPModel(transformed_batch, Y_batch, likelihood).to(device)
+                    temp_gp.load_state_dict(gp_model.state_dict())
+                    
+                    # Évaluer
+                    output_dist = temp_gp(transformed_batch)
+                    temp_mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, temp_gp)
+                
+                # Recalculer avec gradients pour le Flow
+                loss = -temp_mll(output_dist, Y_batch)
+                loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(flow_model.parameters(), max_norm=1.0)
+            if update_gp and gp_optimizer:
+                torch.nn.utils.clip_grad_norm_(gp_params, max_norm=1.0)
+            
+            # Mise à jour
+            flow_optimizer.step()
+            if update_gp and gp_optimizer:
+                gp_optimizer.step()
+            
+            epoch_loss += loss.item()
+        
+        avg_loss = epoch_loss / (len(realization) * num_flow_batches)
+        loss_history.append(avg_loss)
+        
+        if (epoch + 1) % 10 == 0:
+            print(f"Époque {epoch+1}: Loss = {avg_loss:.6f}")
+    
+    return flow_model, gp_model, likelihood, loss_history
