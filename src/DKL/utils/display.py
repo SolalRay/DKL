@@ -14,7 +14,7 @@ def predict_pointwise_gp(model, likelihood, X_test, batch_size=128, show_progres
     Args:
         model: Trained GP model
         X_test: Test points (torch.Tensor)
-        batch_size: Batch size (use 1 for point-by-point)
+        batch_size: Batch size (use 1 for point-by-point)s
         show_progress: Whether to display a progress bar
     
     Returns:
@@ -315,3 +315,168 @@ def plotting(trained_flow, trained_gp, trained_likelihood,
     plt.show()
     if savefig:
         plt.savefig("transformation.png")
+
+
+
+def data_plotting(trained_flow, trained_gp, trained_likelihood, 
+            common_data, realization,
+            loss_history, savefig = False):
+    trained_flow.eval()
+    trained_gp.eval() # Ensure eval mode
+    trained_likelihood.eval()
+
+
+    with torch.no_grad():
+        learned_transformed_z = trained_flow(common_data['X_train_torch'])
+        learned_transformed_z_np = learned_transformed_z.cpu().numpy()
+        X_np = common_data['X_train_np']
+        #X_transformed_true_np = transform(X_np)#, scale=scale)
+
+    # Plot the training loss (same as before)
+    plt.figure(figsize=(10, 5))
+    plt.plot(loss_history)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss : Negative Marginal Log-Likelihood")
+    plt.title("Joint Training Loss")
+    plt.grid(True)
+    plt.show()
+
+    # Plot the original data points and learned transformed points (scatter plots, same as before)
+    first_realization_y_np = realization['Y_train_np'] # Use the first realization for color coding
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    scatter1 = plt.scatter(X_np[:, 0], X_np[:, 1], c=first_realization_y_np, cmap='viridis', s=10, alpha=0.6)
+    plt.colorbar(scatter1)
+    plt.title('Original Data')
+    plt.xlabel('X1')
+    plt.ylabel('X2')
+    plt.axis('equal')
+    plt.grid(True)
+    plt.subplot(1, 2, 2)
+    scatter2 = plt.scatter(learned_transformed_z_np[:, 0], learned_transformed_z_np[:, 1], c=first_realization_y_np, cmap='viridis', s=10, alpha=0.6)
+    plt.colorbar(scatter2)
+    plt.title('Original Points in Learned Transformed Space')
+    plt.xlabel('Learned Z1')
+    plt.ylabel('Learned Z2')
+    plt.axis('equal')
+    plt.grid(True)
+    plt.show()
+
+
+def data_test_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp, naive_likelihood, common_data, realization, variance = False):
+
+    """ Va inferer les Trois GP sur les donnees de test et calculer le MSE """
+
+    print("\n--- Testing with Existing Test Grid ---")
+    trained_flow.eval()
+    trained_gp.eval()
+    trained_likelihood.eval()
+    naive_gp.eval()
+    naive_likelihood.eval()
+
+    print("Using the initial test grid data from generation...")
+    X_test_torch_flat = common_data['X_test_torch'] # On utilise les tenseur aplatis
+    Y_test_2d_np_true = realization['Y_test_np']
+    Y_test_torch_flat_true = realization['Y_test_torch']
+    
+
+    BATCH_SIZE = 2048
+
+    # On commence par le modele principal
+    print("Predicting and Sampling from Learned GP on test grid...")
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
+        final_trained_z = trained_flow(common_data['X_train_torch'])
+
+        # On transforme les coordonnées de test par le flow
+        X_test_learned_z = trained_flow(X_test_torch_flat)
+        trained_gp.set_train_data(final_trained_z, realization['Y_train_torch'], strict=True)
+        learned_pred_mean_flat, learned_pred_var_flat = predict_pointwise_gp(trained_gp, trained_likelihood, X_test_learned_z, batch_size=BATCH_SIZE, show_progress=True)
+
+
+    # Pareil pour le Naif
+    print("Predicting and Sampling from Guessed GP on test grid...")
+    with torch.no_grad():
+        guessed_pred_mean_flat, guessed_pred_var_flat = predict_pointwise_gp(naive_gp,naive_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
+
+
+    # On calcule les MSE
+    print("\nCalculating MSE on Initial Test Grid Data...")
+    y_true_torch_flat_float = Y_test_torch_flat_true.float()
+    mse_learned_test = F.mse_loss(learned_pred_mean_flat, y_true_torch_flat_float)
+    learned_pred_2d = learned_pred_mean_flat.cpu().numpy()
+
+    print(f"MSE (Learned Non-Stationary GP) vs True Test Grid (Rzn 0): {mse_learned_test.item():.6f}")
+
+    mse_guessed_test = F.mse_loss(guessed_pred_mean_flat, y_true_torch_flat_float)
+    print(f"MSE (Best Stationary GP in Original Space) vs True Test Grid (Rzn 0): {mse_guessed_test.item():.6f}")
+    guessed_pred_2d = guessed_pred_mean_flat.cpu().numpy()
+
+     
+    # Prepare data
+    learned_var_2d = learned_pred_var_flat.cpu().numpy()
+    guessed_var_2d = guessed_pred_var_flat.cpu().numpy()
+
+    # Calculate CRPS for each model
+    crps_learned = ps.crps_gaussian(Y_test_2d_np_true,learned_pred_2d, np.sqrt(learned_var_2d))
+    crps_guessed = ps.crps_gaussian(Y_test_2d_np_true,guessed_pred_2d, np.sqrt(guessed_var_2d))
+    
+    # boxplots of the CRPS
+    plt.figure(figsize=(16, 8))
+    plt.boxplot([crps_learned.flatten(), crps_guessed.flatten()], tick_labels=['Learned', 'Stationary'])
+    plt.title('CRPS Comparison')
+    plt.ylabel('CRPS')
+    plt.yscale('log')
+    plt.grid()
+    plt.show()
+
+    print("Evaluation finished.")
+
+
+def data_pred_new_realization(trained_flow, trained_gp, trained_likelihood, naive_gp, naive_likelihood, common_data, realization):
+
+    """ Va inferer les Trois GP sur les points de grille """
+
+    print("\n--- Testing with Existing Test Grid ---")
+    trained_flow.eval()
+    trained_gp.eval()
+    trained_likelihood.eval()
+    naive_gp.eval()
+    naive_likelihood.eval()
+
+    print("Using the initial test grid data from generation...")
+    X_test_torch_flat = common_data['X_predict_torch'] # On utilise les tenseur aplatis
+
+    BATCH_SIZE = 2048
+
+    # On commence par le modele principal
+    print("Predicting and Sampling from Learned GP on test grid...")
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
+        final_trained_z = trained_flow(common_data['X_train_torch'])
+        # train_y_for_gp_context = realizations[0]['Y_train_torch']   ## ICI PREMIERE REALISARION UNIQUEMENT, CHANGER POUR PLUS DE REALISATION
+        # trained_gp.set_train_data(final_trained_z, train_y_for_gp_context, strict=True)
+
+        # On transforme les coordonnées de test par le flow
+        X_test_learned_z = trained_flow(X_test_torch_flat)
+        trained_gp.set_train_data(final_trained_z, realization['Y_train_torch'], strict=True)
+        learned_pred_mean_flat, learned_pred_var_flat = predict_pointwise_gp(trained_gp, trained_likelihood, X_test_learned_z, batch_size=BATCH_SIZE, show_progress=True)
+
+
+    # Pareil pour le Naif
+    print("Predicting and Sampling from Guessed GP on test grid...")
+    with torch.no_grad():
+        guessed_pred_mean_flat, guessed_pred_var_flat = predict_pointwise_gp(naive_gp, naive_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
+
+
+    learned_pred_2d = learned_pred_mean_flat.cpu().numpy()
+    guessed_pred_2d = guessed_pred_mean_flat.cpu().numpy()
+
+     
+    # Prepare data
+    learned_var_2d = learned_pred_var_flat.cpu().numpy()
+    guessed_var_2d = guessed_pred_var_flat.cpu().numpy()
+      
+    print("Evaluation finished.")
+
+    return learned_pred_2d, guessed_pred_2d, learned_var_2d, guessed_var_2d
+
+
