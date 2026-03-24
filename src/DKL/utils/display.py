@@ -87,7 +87,7 @@ def test_new_realization(trained_flow, trained_gp, trained_likelihood,
 
     # 1. Main Learned Model (DKL)
     print("Predicting and Sampling from Learned GP on test grid...")
-    with torch.no_grad():
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
         final_trained_z = trained_flow(common_data['X_train_torch'])
 
         # Transform test coordinates through the flow
@@ -97,12 +97,12 @@ def test_new_realization(trained_flow, trained_gp, trained_likelihood,
 
     # 2. Naive Model (Stationary GP)
     print("Predicting and Sampling from Guessed (Naive) GP on test grid...")
-    with torch.no_grad():
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
         guessed_pred_mean_flat, guessed_pred_var_flat = predict_pointwise_gp(naive_gp, naive_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
 
     # 3. Ideal Case (Stationary GP on Ground Truth Transformation)
     print("Predicting and Sampling from True Transformed (Ideal) GP on test grid...")
-    with torch.no_grad():
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
         true_transformed_pred_mean_flat, true_transformed_pred_var_flat = predict_pointwise_gp(ideal_gp, ideal_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
 
     # MSE Calculations
@@ -395,7 +395,7 @@ def data_test_new_realization(trained_flow, trained_gp, trained_likelihood, naiv
 
     # Pareil pour le Naif
     print("Predicting and Sampling from Guessed GP on test grid...")
-    with torch.no_grad():
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
         guessed_pred_mean_flat, guessed_pred_var_flat = predict_pointwise_gp(naive_gp,naive_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
 
 
@@ -463,7 +463,7 @@ def data_pred_new_realization(trained_flow, trained_gp, trained_likelihood, naiv
 
     # Pareil pour le Naif
     print("Predicting and Sampling from Guessed GP on test grid...")
-    with torch.no_grad():
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
         guessed_pred_mean_flat, guessed_pred_var_flat = predict_pointwise_gp(naive_gp, naive_likelihood, X_test_torch_flat, batch_size=BATCH_SIZE, show_progress=True)
 
 
